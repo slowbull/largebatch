@@ -45,7 +45,7 @@ class FCNet(nn.Module):
         self.fc3 = nn.Linear(200, 200)
         self.fc4 = nn.Linear(200, 200)
         self.fc5 = nn.Linear(200, 10)
-
+        
     def forward(self, x):
         '''
         x = F.relu(self.fc1(x))
@@ -152,6 +152,7 @@ def test(args, model, device, test_loader):
     #test_loss /= len(test_loader.dataset)
     return losses.avg, top1.avg, top5.avg
 
+
 def main():
     # Training settings
     parser = argparse.ArgumentParser(description='PyTorch MNIST Example')
@@ -210,6 +211,14 @@ def main():
                        ])),
         batch_size=args.test_batch_size, shuffle=True, **kwargs)
 
+    M_loader = torch.utils.data.DataLoader(
+        datasets.MNIST('../data', train=True, download=True,
+                       transform=transforms.Compose([
+                           transforms.ToTensor(),
+                           transforms.Normalize((0.1307,), (0.3081,))
+                       ])),
+        batch_size=10, shuffle=False, **kwargs)
+
     if not args.cnn:
         if not args.bn:
             model = FCNet().to(device)
@@ -250,11 +259,12 @@ def main():
                 ]
         optimizer = optim.SGD(params, lr=args.lr, momentum=args.momentum)
 
-    print('Epoch   train_loss  train_acc_top1  train_acc_top5   test_loss   test_acc_top1  test_acc_top5')
+    print('Epoch   train_loss  train_acc_top1  train_acc_top5   test_loss   test_acc_top1  test_acc_top5 ')
     for epoch in range(1, args.epochs + 1):
         train_loss, train_top1, train_top5 = train(args, model, device, train_loader, optimizer, epoch)
         test_loss, test_top1, test_top5 = test(args, model, device, test_loader)
-        print("{:d}  {:.4f}  {:.4f}  {:.4f}  {:.4f}  {:.4f}  {:.4f}".format(epoch, train_loss, train_top1, train_top5, test_loss, test_top1, test_top5))
+
+        print("{:d}  {:.4f}  {:.4f}   {:.4f}  {:.4f}  {:.4f}  {:.4f}".format(epoch, train_loss, train_top1, train_top5, test_loss, test_top1, test_top5))
 
     if (args.save_model):
         torch.save(model.state_dict(),"mnist_cnn.pt")
