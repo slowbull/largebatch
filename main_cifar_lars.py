@@ -95,6 +95,7 @@ def main(args):
   # define loss function (criterion) and optimizer
   criterion = torch.nn.CrossEntropyLoss()
 
+  """
   params_skip = []
   params_noskip = []
   skip_lists = ['bn', 'bias']
@@ -105,9 +106,23 @@ def main(args):
       params_noskip.append(param)
   param_lrs = [{'params':params_skip, 'lr':state['learning_rate']},
 		{'params':params_noskip, 'lr':state['learning_rate']}]
-  
+  """ 
+  param_lrs = []
+  params = []
+  names = []
+  layers = [3,] + [54,]*3 + [2,]
+  for i, (name, param) in enumerate(net.named_parameters()):
+    params.append(param)
+    names.append(name)
+    if len(params) == layers[0]:
+      param_dict = {'params': params, 'lr':state['learning_rate']}
+      param_lrs.append(param_dict)
+      params = []
+      names = []
+      layers.pop(0)
+      
   optimizer = LARSOptimizer(param_lrs, state['learning_rate'], momentum=state['momentum'],
-                weight_decay=state['decay'], nesterov=False, steps=state['steps'])
+                weight_decay=state['decay'], nesterov=False, steps=state['steps'], eta=state['eta'])
 
   if args.use_cuda:
     net.cuda()
@@ -153,7 +168,7 @@ def train(train_loader, model, criterion, optimizer, epoch, log, args):
     optimizer.zero_grad()
   for i, (inputs, target) in enumerate(train_loader):
     if (epoch*len(train_loader)+i) % args.steps == 0:
-      poly_lr_rate((epoch*len(train_loader)+i)//args.steps, warmup_steps, total_steps, optimizer, args.learning_rate*args.batch_size*args.steps/128) 
+      poly_lr_rate((epoch*len(train_loader)+i)//args.steps, warmup_steps, total_steps, optimizer, args.learning_rate*args.batch_size*args.steps/128, args.lw) 
 
     if args.use_cuda:
       inputs = inputs.cuda(async=True)
@@ -243,7 +258,7 @@ def adjust_learning_rate(optimizer, epoch, gammas, schedule, lr):
     param_group['lr'] = lr
   return lr
 
-def poly_lr_rate(current_steps, warmup_steps, total_steps, optimizer, lr):
+def poly_lr_rate(current_steps, warmup_steps, total_steps, optimizer, lr, lw=False):
 
   # poly + warmup
   if current_steps < warmup_steps:
@@ -251,8 +266,20 @@ def poly_lr_rate(current_steps, warmup_steps, total_steps, optimizer, lr):
   else:
     decay_steps = max(current_steps-warmup_steps, 1)
     current_lr = polynomial_decay(lr, decay_steps, total_steps-warmup_steps+1, power=2.0)
-  for param_group in optimizer.param_groups:
-    param_group['lr'] = current_lr
+
+  if not lw:
+    for param_group in optimizer.param_groups:
+      param_group['lr'] = current_lr
+  else:
+    num_params = len(optimizer.param_groups)
+    if current_steps < warmup_steps:
+      min_lr = current_lr / 2
+      for j, param_group in enumerate(optimizer.param_groups):
+        param_group['lr'] = min(pow((num_params-j)/num_params, 1-(current_steps)/warmup_steps)*(current_lr-min_lr)+min_lr, lr)
+    else:
+      min_lr = current_lr / 2
+      for j, param_group in enumerate(optimizer.param_groups):
+        param_group['lr'] = min((j+1)/num_params * min_lr+min_lr, lr)
 
 
 def polynomial_decay(lr, global_step, decay_steps, end_lr=0.0001,  power=1.0):
@@ -295,6 +322,8 @@ if __name__ == '__main__':
   # warmup
   parser.add_argument('--warmup', type=int, default=5, help='Number of epochs for warmup.')
   parser.add_argument('--steps', type=int, default=1, help='Number of steps before applying gradient.')
+  parser.add_argument('--lw', action='store_true', default=False, help='layerwise learning rate')
+  parser.add_argument('--eta', type=float, default=0.001, help='eta for lars optimizer')
   # Checkpoints
   parser.add_argument('--print_freq', default=200, type=int, metavar='N', help='print frequency (default: 200)')
   parser.add_argument('--save_path', type=str, default='./', help='Folder to save checkpoints and log.')
