@@ -35,9 +35,9 @@ parser.add_argument('-j', '--workers', default=16, type=int, metavar='N', help='
 parser.add_argument('--epochs', default=90, type=int, metavar='n', help='number of total epochs to run')
 parser.add_argument('--start-epoch', default=0, type=int, metavar='N', help='manual epoch number (useful on restarts)')
 parser.add_argument('-b', '--batch-size', default=256, type=int, metavar='N', help='mini-batch size (default: 256)')
-parser.add_argument('--lr', '--learning_rate', default=0.1, type=float, metavar='LR', help='initial learning rate')
+parser.add_argument('-lr', '--learning_rate', default=0.128, type=float, metavar='LR', help='initial learning rate')
 parser.add_argument('--momentum', default=0.9, type=float, metavar='M', help='momentum')
-parser.add_argument('--weight-decay', '--wd', default=2e-4, type=float, metavar='W', help='weight decay (default: 1e-4)')
+parser.add_argument('--weight_decay', '--wd', default=2e-4, type=float, metavar='W', help='weight decay (default: 1e-4)')
 parser.add_argument('--print-freq', '-p', default=200, type=int, metavar='N', help='print frequency (default: 100)')
 parser.add_argument('--resume', default='', type=str, metavar='PATH', help='path to latest checkpoint (default: none)')
 parser.add_argument('-e', '--evaluate', dest='evaluate', action='store_true', help='evaluate model on validation set')
@@ -76,27 +76,20 @@ def main():
     param_lrs = []
     params = []
     names = []
-    for i, (name, param) in enumerate(net.named_parameters()):
+    layers = [3,] + [12,]+[9,]*2+[12,]+[9,]*3+[12,]+[9,]*5+[12,]+[9,]*2+[2,]
+    for i, (name, param) in enumerate(model.named_parameters()):
         params.append(param)
         names.append(name)
-        if i == 2:
+        if len(params) == layers[0]:
             param_dict = {'params': params, 'lr':args.learning_rate}
             param_lrs.append(param_dict)
+            print(names)
             params = []
             names = []
-        elif len(params) == 6:
-            param_dict = {'params': params, 'lr':args.learning_rate}
-            param_lrs.append(param_dict)
-            params = []
-            names = []
-
-    param_dict = {'params': params, 'lr':args.arning_rate}
-    param_lrs.append(param_dict)
-    names = []
-    params = []
+            layers.pop(0)
       
     optimizer = LARSOptimizer(param_lrs, args.learning_rate, momentum=args.momentum,
-                weight_decay=args.decay, nesterov=False, steps=args.steps, eta=args.eta)
+                weight_decay=args.weight_decay, nesterov=False, steps=args.steps, eta=args.eta)
 
     # optionally resume from a checkpoint
     if args.resume:
