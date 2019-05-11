@@ -50,7 +50,7 @@ class LARSOptimizer(Optimizer):
     """
 
     def __init__(self, params, lr=required, momentum=0, dampening=0,
-                 weight_decay=0, nesterov=False, steps=1):
+                 weight_decay=0, nesterov=False, steps=1, eta=0.001):
         if lr is not required and lr < 0.0:
             raise ValueError("Invalid learning rate: {}".format(lr))
         if momentum < 0.0:
@@ -64,6 +64,7 @@ class LARSOptimizer(Optimizer):
             raise ValueError("Nesterov momentum requires a momentum and zero dampening")
         super(LARSOptimizer, self).__init__(params, defaults)
         self.steps = steps
+        self.eta = eta
 
     def __setstate__(self, state):
         super(LARSOptimizer, self).__setstate__(state)
@@ -95,14 +96,13 @@ class LARSOptimizer(Optimizer):
                     d_p.add_(weight_decay, p.data)
 
                 scale = 1.0
-                if i == 1: 
+                if True: 
                   w_norm = torch.norm(p.data)
                   g_norm = torch.norm(d_p)
                   if w_norm != 0 and g_norm != 0:
-                    scale = w_norm / (g_norm + 1e-6) * 0.001
+                    scale = w_norm / (g_norm + 1e-6) * self.eta
 
                 scaled_lr = group['lr'] * scale
-                #scaled_lr = group['lr'] * 128/512/32 * scale * 100
 
                 if momentum != 0:
                     param_state = self.state[p]
