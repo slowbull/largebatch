@@ -50,7 +50,7 @@ class LARSOptimizer(Optimizer):
     """
 
     def __init__(self, params, lr=required, momentum=0, dampening=0,
-                 weight_decay=0, nesterov=False, steps=1, eta=0.001):
+                 weight_decay=0, nesterov=False, steps=1, eta=0.001, skip_idx=[]):
         if lr is not required and lr < 0.0:
             raise ValueError("Invalid learning rate: {}".format(lr))
         if momentum < 0.0:
@@ -65,13 +65,14 @@ class LARSOptimizer(Optimizer):
         super(LARSOptimizer, self).__init__(params, defaults)
         self.steps = steps
         self.eta = eta
+        self.skip_idx = skip_idx
 
     def __setstate__(self, state):
         super(LARSOptimizer, self).__setstate__(state)
         for group in self.param_groups:
             group.setdefault('nesterov', False)
 
-    def step(self, closure=None):
+    def step(self, closure=None, avg_norm=[]):
         """Performs a single optimization step.
 
         Arguments:
@@ -81,6 +82,8 @@ class LARSOptimizer(Optimizer):
         loss = None
         if closure is not None:
             loss = closure()
+
+        idx = 0
 
         for i, group in enumerate(self.param_groups):
             weight_decay = group['weight_decay']
@@ -96,11 +99,18 @@ class LARSOptimizer(Optimizer):
                     d_p.add_(weight_decay, p.data)
 
                 scale = 1.0
-                if True: 
+
+                if idx not in self.skip_idx: 
                   w_norm = torch.norm(p.data)
                   g_norm = torch.norm(d_p)
                   if w_norm != 0 and g_norm != 0:
                     scale = w_norm / (g_norm + 1e-6) * self.eta
+
+                  if avg_norm:
+                    M = g_norm / (avg_norm[idx] + 1e-6)
+                    scale = scale * M 
+                else:
+                  scale = 0.01
 
                 scaled_lr = group['lr'] * scale
 
@@ -116,6 +126,7 @@ class LARSOptimizer(Optimizer):
                     else:
                         d_p = buf
 
+                idx += 1
                 p.data.add_(-scaled_lr, d_p)
 
         return loss
