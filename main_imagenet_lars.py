@@ -45,8 +45,12 @@ parser.add_argument('--ngpu', type=int, default=1, help='0 = CPU.')
 
 parser.add_argument('--warmup', type=int, default=5, help='Number of epochs for warmup.')
 parser.add_argument('--steps', type=int, default=1, help='Number of steps before applying gradient.')
-parser.add_argument('--lw', action='store_true', default=False, help='layerwise learning rate')
+parser.add_argument('--lars', action='store_true', default=False, help='lars optimizer')
 parser.add_argument('--eta', type=float, default=0.001, help='eta for lars optimizer')
+parser.add_argument('--lw', action='store_true', default=False, help='layerwise learning rate')
+parser.add_argument('--M_iters', type=int, default=64, help='approximate M')
+parser.add_argument('--lw_epochs', type=int, default=200, help='epochs computing M')
+parser.add_argument('--lw_eta', type=float, default=0.01, help='eta for lars optimizer')
 
 args = parser.parse_args()
 args.prefix = time_file_str()
@@ -73,6 +77,7 @@ def main():
     # define loss function (criterion) and optimizer
     criterion = nn.CrossEntropyLoss().cuda()
 
+    """
     param_lrs = []
     params = []
     names = []
@@ -87,9 +92,20 @@ def main():
             params = []
             names = []
             layers.pop(0)
-      
-    optimizer = LARSOptimizer(param_lrs, args.learning_rate, momentum=args.momentum,
+    """
+    skip_lists = ['bn', 'bias']
+    skip_idx = []
+    for idx, (name, param) in enumerate(net.named_parameters()):
+        if any(skip_name in name for skip_name in skip_lists):
+            skip_idx.append(idx)
+
+    param_lrs = model.parameters()
+    if args.lars:  
+        optimizer = LARSOptimizer(param_lrs, args.learning_rate, momentum=args.momentum,
                 weight_decay=args.weight_decay, nesterov=False, steps=args.steps, eta=args.eta)
+    else:
+        optimizer = optim.SGD(param_lrs, state['learning_rate'], momentum=state['momentum'],
+                weight_decay=state['decay'], nesterov=False)
 
     # optionally resume from a checkpoint
     if args.resume:
@@ -186,6 +202,8 @@ def train(train_loader, model, criterion, optimizer, epoch, log):
     total_steps = num_batches * args.epochs
 
     if epoch == 0:
+        if args.lw:
+            compute_M(model, criterion, optimizer, M_loader, avg_norm, iters=args.M_iters)
         optimizer.zero_grad()
     end = time.time()
     for i, (input, target) in enumerate(train_loader):
@@ -211,7 +229,18 @@ def train(train_loader, model, criterion, optimizer, epoch, log):
         # compute gradient and do SGD step
         loss.backward()
         if (epoch*len(train_loader)+i+1) % args.steps == 0:
-            optimizer.step()
+            if args.lars:
+                optimizer.step(avg_norm=avg_norm)
+            else:
+                optimizer.step()
+
+            if args.lw and epoch < args.lw_epochs:
+                compute_M(model, criterion, optimizer, M_loader, avg_norm, iters=args.M_iters)
+                optimizer.eta = args.lw_eta 
+            else:
+                avg_norm = []
+                optimizer.eta = args.eta
+
             optimizer.zero_grad()
 
         # measure elapsed time
@@ -335,6 +364,31 @@ def accuracy(output, target, topk=(1,)):
         res.append(correct_k.mul_(100.0 / batch_size))
     return res
 
+def compute_M(model, criterion, optimizer, M_loader, avg_norm, iters=8):
+  for i in range(len(avg_norm)):
+    avg_norm[i] = 0
+
+  for i, (inputs, target) in  enumerate(M_loader):
+    if args.use_cuda:
+      inputs = inputs.cuda(async=True)
+      target = target.cuda()
+
+    input_var = torch.autograd.Variable(inputs)
+    target_var = torch.autograd.Variable(target)
+
+    # compute output
+    output = model(input_var)
+    loss = criterion(output, target_var)
+
+    # compute gradient and do SGD step
+    optimizer.zero_grad()
+    loss.backward()
+
+    for j, param in enumerate(model.parameters()):
+      avg_norm[j] += torch.norm(param.grad.data) / iters
+
+    if i >= iters-1:
+      break
 
 if __name__ == '__main__':
     main()
