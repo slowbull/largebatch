@@ -3,6 +3,7 @@ from __future__ import division
 import os, sys, shutil, time, random, math
 import argparse
 import torch
+import torch.optim as optim
 import torch.backends.cudnn as cudnn
 import torchvision.datasets as dset
 import torchvision.transforms as transforms
@@ -83,6 +84,8 @@ def main(args):
                          num_workers=args.workers, pin_memory=True)
   test_loader = torch.utils.data.DataLoader(test_data, batch_size=args.batch_size, shuffle=False,
                         num_workers=args.workers, pin_memory=True)
+  M_loader = torch.utils.data.DataLoader(train_data, batch_size=8, shuffle=True,
+                         num_workers=args.workers, pin_memory=True)
 
   print_log("=> creating model '{}'".format(args.arch), log)
   # Init model, criterion, and optimizer
@@ -106,7 +109,6 @@ def main(args):
       params_noskip.append(param)
   param_lrs = [{'params':params_skip, 'lr':state['learning_rate']},
 		{'params':params_noskip, 'lr':state['learning_rate']}]
-  """ 
   param_lrs = []
   params = []
   names = []
@@ -121,8 +123,21 @@ def main(args):
       names = []
       layers.pop(0)
       
-  optimizer = LARSOptimizer(param_lrs, state['learning_rate'], momentum=state['momentum'],
-                weight_decay=state['decay'], nesterov=False, steps=state['steps'], eta=state['eta'])
+  """ 
+  skip_lists = ['bn', 'bias']
+  skip_idx = []
+  for idx, (name, param) in enumerate(net.named_parameters()):
+    if any(skip_name in name for skip_name in skip_lists):
+      skip_idx.append(idx)
+
+  param_lrs = net.parameters()
+  
+  if args.lars:
+    optimizer = LARSOptimizer(param_lrs, state['learning_rate'], momentum=state['momentum'],
+                weight_decay=state['decay'], nesterov=False, steps=state['steps'], eta=state['eta'], skip_idx=skip_idx)
+  else:
+    optimizer = optim.SGD(param_lrs, state['learning_rate'], momentum=state['momentum'],
+                weight_decay=state['decay'], nesterov=False)
 
   if args.use_cuda:
     net.cuda()
@@ -131,13 +146,18 @@ def main(args):
   recorder = RecorderMeter(args.epochs)
   # optionally resume from a checkpoint
 
+  avg_norm = []
+  if args.lw: 
+    for param in net.parameters():
+      avg_norm.append(0)
+
   # Main loop
   print_log('Epoch  Train_Prec@1  Train_Prec@5  Train_Loss  Test_Prec@1  Test_Prec@5  Test_Loss  Best_Prec@1  Time', log)
   for epoch in range(args.start_epoch, args.epochs):
 
     # train for one epoch
     start_time = time.time()
-    train_top1, train_top5, train_loss = train(train_loader, net, criterion, optimizer, epoch, log, args)
+    train_top1, train_top5, train_loss = train(train_loader, M_loader, net, criterion, optimizer, epoch, log, args, avg_norm)
     training_time = time.time() - start_time
 
     # evaluate on validation set
@@ -150,7 +170,7 @@ def main(args):
   log.close()
 
 # train function (forward, backward, update)
-def train(train_loader, model, criterion, optimizer, epoch, log, args):
+def train(train_loader, M_loader, model, criterion, optimizer, epoch, log, args, avg_norm):
   losses = AverageMeter()
   top1 = AverageMeter()
   top5 = AverageMeter()
@@ -165,10 +185,14 @@ def train(train_loader, model, criterion, optimizer, epoch, log, args):
   d_time = 0
   start_time = time.time()
   if epoch == 0:
+    if args.lw:
+      compute_M(model, criterion, optimizer, M_loader, avg_norm, iters=args.M_iters)
+
     optimizer.zero_grad()
+
   for i, (inputs, target) in enumerate(train_loader):
     if (epoch*len(train_loader)+i) % args.steps == 0:
-      poly_lr_rate((epoch*len(train_loader)+i)//args.steps, warmup_steps, total_steps, optimizer, args.learning_rate*args.batch_size*args.steps/128, args.lw) 
+      poly_lr_rate((epoch*len(train_loader)+i)//args.steps, warmup_steps, total_steps, optimizer, args.learning_rate*args.batch_size*args.steps/128) 
 
     if args.use_cuda:
       inputs = inputs.cuda(async=True)
@@ -196,7 +220,17 @@ def train(train_loader, model, criterion, optimizer, epoch, log, args):
     loss.backward()
 
     if (epoch*len(train_loader)+i+1) % args.steps == 0:
-      optimizer.step()
+      if args.lars:
+        optimizer.step(avg_norm=avg_norm)
+      else:
+        optimizer.step()
+      if args.lw and epoch < args.lw_epochs:
+        compute_M(model, criterion, optimizer, M_loader, avg_norm, iters=args.M_iters)
+        optimizer.eta = args.lw_eta 
+      else:
+        avg_norm = []
+        optimizer.eta = args.eta
+
       optimizer.zero_grad()
     b_time += time.time() - start_time
 
@@ -258,7 +292,7 @@ def adjust_learning_rate(optimizer, epoch, gammas, schedule, lr):
     param_group['lr'] = lr
   return lr
 
-def poly_lr_rate(current_steps, warmup_steps, total_steps, optimizer, lr, lw=False):
+def poly_lr_rate(current_steps, warmup_steps, total_steps, optimizer, lr):
 
   # poly + warmup
   if current_steps < warmup_steps:
@@ -267,22 +301,37 @@ def poly_lr_rate(current_steps, warmup_steps, total_steps, optimizer, lr, lw=Fal
     decay_steps = max(current_steps-warmup_steps, 1)
     current_lr = polynomial_decay(lr, decay_steps, total_steps-warmup_steps+1, power=2.0)
 
-  if not lw:
-    for param_group in optimizer.param_groups:
-      param_group['lr'] = current_lr
-  else:
-    num_params = len(optimizer.param_groups)
-    if current_steps < warmup_steps:
-      min_lr = current_lr / 2
-      for j, param_group in enumerate(optimizer.param_groups):
-        param_group['lr'] = min(pow((num_params-j)/num_params, 1-(current_steps)/warmup_steps)*(current_lr-min_lr)+min_lr, lr)
-    else:
-      min_lr = current_lr / 2
-      for j, param_group in enumerate(optimizer.param_groups):
-        param_group['lr'] = min((j+1)/num_params * min_lr+min_lr, lr)
+  for param_group in optimizer.param_groups:
+    param_group['lr'] = current_lr
 
 
-def polynomial_decay(lr, global_step, decay_steps, end_lr=0.0001,  power=1.0):
+def compute_M(model, criterion, optimizer, M_loader, avg_norm, iters=8):
+  for i in range(len(avg_norm)):
+    avg_norm[i] = 0
+
+  for i, (inputs, target) in  enumerate(M_loader):
+    if args.use_cuda:
+      inputs = inputs.cuda(async=True)
+      target = target.cuda()
+
+    input_var = torch.autograd.Variable(inputs)
+    target_var = torch.autograd.Variable(target)
+
+    # compute output
+    output = model(input_var)
+    loss = criterion(output, target_var)
+
+    # compute gradient and do SGD step
+    optimizer.zero_grad()
+    loss.backward()
+
+    for j, param in enumerate(model.parameters()):
+      avg_norm[j] += torch.norm(param.grad.data) / iters
+
+    if i >= iters-1:
+      break
+
+def polynomial_decay(lr, global_step, decay_steps, end_lr=0.0001, power=1.0):
   global_step = min(global_step, decay_steps)
   return (lr-end_lr) * pow(1-global_step/decay_steps, power) + end_lr
   
@@ -320,10 +369,14 @@ if __name__ == '__main__':
   parser.add_argument('--schedule', type=int, nargs='+', default=[150, 225], help='Decrease learning rate at these epochs.')
   parser.add_argument('--gammas', type=float, nargs='+', default=[0.1, 0.1], help='LR is multiplied by gamma on schedule, number of gammas should be equal to schedule')
   # warmup
+  parser.add_argument('--lars', action='store_true', default=False, help='lars optimizer')
+  parser.add_argument('--eta', type=float, default=0.001, help='eta for lars optimizer')
   parser.add_argument('--warmup', type=int, default=5, help='Number of epochs for warmup.')
   parser.add_argument('--steps', type=int, default=1, help='Number of steps before applying gradient.')
+  parser.add_argument('--M_iters', type=int, default=64, help='approximate M')
   parser.add_argument('--lw', action='store_true', default=False, help='layerwise learning rate')
-  parser.add_argument('--eta', type=float, default=0.001, help='eta for lars optimizer')
+  parser.add_argument('--lw_epochs', type=int, default=200, help='epochs computing M')
+  parser.add_argument('--lw_eta', type=float, default=0.01, help='eta for lars optimizer')
   # Checkpoints
   parser.add_argument('--print_freq', default=200, type=int, metavar='N', help='print frequency (default: 200)')
   parser.add_argument('--save_path', type=str, default='./', help='Folder to save checkpoints and log.')
