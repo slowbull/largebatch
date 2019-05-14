@@ -102,7 +102,7 @@ def main():
     param_lrs = model.parameters()
     if args.lars:  
         optimizer = LARSOptimizer(param_lrs, args.learning_rate, momentum=args.momentum,
-                weight_decay=args.weight_decay, nesterov=False, steps=args.steps, eta=args.eta)
+                weight_decay=args.weight_decay, nesterov=False, steps=args.steps, eta=args.eta, skip_idx=skip_idx)
     else:
         optimizer = optim.SGD(param_lrs, state['learning_rate'], momentum=state['momentum'],
                 weight_decay=state['decay'], nesterov=False)
@@ -329,19 +329,8 @@ def poly_lr_rate(current_steps, warmup_steps, total_steps, optimizer, lr, lw=Fal
     decay_steps = max(current_steps-warmup_steps, 1)
     current_lr = polynomial_decay(lr, decay_steps, total_steps-warmup_steps+1, power=2.0)
 
-  if not lw:
-    for param_group in optimizer.param_groups:
-      param_group['lr'] = current_lr
-  else:
-    num_params = len(optimizer.param_groups)
-    if current_steps < warmup_steps:
-      min_lr = current_lr / 2
-      for j, param_group in enumerate(optimizer.param_groups):
-        param_group['lr'] = min((num_params-j)/num_params*(current_lr-min_lr)+min_lr, lr)
-    else:
-      min_lr = current_lr / 2
-      for j, param_group in enumerate(optimizer.param_groups):
-        param_group['lr'] = min((j+1)/num_params * min_lr+min_lr, lr)
+  for param_group in optimizer.param_groups:
+    param_group['lr'] = current_lr
 
 
 def polynomial_decay(lr, global_step, decay_steps, end_lr=0.0001,  power=1.0):
