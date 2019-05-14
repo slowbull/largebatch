@@ -100,6 +100,7 @@ class LARSOptimizer(Optimizer):
 
                 scale = 1.0
 
+                #if True: 
                 if idx not in self.skip_idx: 
                   w_norm = torch.norm(p.data)
                   g_norm = torch.norm(d_p)
@@ -108,10 +109,10 @@ class LARSOptimizer(Optimizer):
 
                   if avg_norm:
                     M = g_norm / (avg_norm[idx] + 1e-6)
-                    scale = scale * M 
+                    scale = min(0.1, scale * M)
                 else:
-                  scale = 0.01
-
+                  scale = 1.
+                
                 scaled_lr = group['lr'] * scale
 
                 if momentum != 0:
