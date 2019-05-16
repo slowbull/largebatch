@@ -95,7 +95,7 @@ def main():
     """
     skip_lists = ['bn', 'bias']
     skip_idx = []
-    for idx, (name, param) in enumerate(net.named_parameters()):
+    for idx, (name, param) in enumerate(model.named_parameters()):
         if any(skip_name in name for skip_name in skip_lists):
             skip_idx.append(idx)
 
@@ -151,6 +151,10 @@ def main():
         batch_size=args.batch_size, shuffle=False,
         num_workers=args.workers, pin_memory=True)
 
+    M_loader = torch.utils.data.DataLoader(
+        train_dataset, batch_size=8, shuffle=True,
+        num_workers=args.workers, pin_memory=True, sampler=None)
+
     if args.evaluate:
         validate(val_loader, model, criterion)
         return
@@ -158,13 +162,17 @@ def main():
     filename = os.path.join(args.save_dir, 'checkpoint.{}.{}.pth.tar'.format(args.arch, args.prefix))
     bestname = os.path.join(args.save_dir, 'best.{}.{}.pth.tar'.format(args.arch, args.prefix))
 
+    avg_norm = []
+    if args.lw: 
+        for param in model.parameters():
+            avg_norm.append(0)
 
     print_log('Epoch  Train_Prec@1  Train_Prec@5  Train_Loss  Test_Prec@1  Test_Prec@5  Test_Loss  Best_Prec@1  Time', log)
     for epoch in range(args.start_epoch, args.epochs):
 
         # train for one epoch
         start_time = time.time()
-        train_top1, train_top5, train_loss = train(train_loader, model, criterion, optimizer, epoch, log)
+        train_top1, train_top5, train_loss = train(train_loader, M_loader, model, criterion, optimizer, epoch, log, avg_norm)
         training_time = time.time() - start_time
 
         # evaluate on validation set
@@ -188,7 +196,7 @@ def main():
     log.close()
 
 
-def train(train_loader, model, criterion, optimizer, epoch, log):
+def train(train_loader, M_loader, model, criterion, optimizer, epoch, log, avg_norm):
     batch_time = AverageMeter()
     data_time = AverageMeter()
     losses = AverageMeter()
@@ -358,9 +366,8 @@ def compute_M(model, criterion, optimizer, M_loader, avg_norm, iters=8):
     avg_norm[i] = 0
 
   for i, (inputs, target) in  enumerate(M_loader):
-    if args.use_cuda:
-      inputs = inputs.cuda(async=True)
-      target = target.cuda()
+    inputs = inputs.cuda(async=True)
+    target = target.cuda()
 
     input_var = torch.autograd.Variable(inputs)
     target_var = torch.autograd.Variable(target)
